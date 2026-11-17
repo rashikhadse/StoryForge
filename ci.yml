@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      LLM_PROVIDER: mock
+      CRITIC_PROVIDER: mock
+      EMBED_MODEL: hash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check storyforge tests
+      - run: pytest -q
+      - name: Offline end-to-end demo
+        run: python -m storyforge run data/stories/the_potters_daughter.txt --mock --episodes 4 --languages hi,hi-Latn
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t storyforge .
