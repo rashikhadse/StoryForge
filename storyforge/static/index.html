@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StoryForge: story to microdrama</title>
+<style>
+  :root { --ink:#1d1b18; --muted:#6b645b; --line:#e4ddd2; --bg:#faf7f2; --accent:#b4441f; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
+  main { max-width: 1100px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font: 600 28px/1.2 Georgia, serif; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:16px; }
+  textarea { width:100%; height:340px; border:1px solid var(--line); border-radius:8px; padding:10px; font:13px/1.5 ui-monospace, monospace; resize:vertical; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:12px; }
+  label { font-size:13px; color:var(--muted); }
+  select, input[type=text] { padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:#fff; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:8px 14px; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); border:1px solid var(--accent); }
+  button:disabled { opacity:.5; cursor:default; }
+  #status { font-size:13px; color:var(--muted); min-height:20px; }
+  .tabs button { background:transparent; color:var(--muted); border:1px solid var(--line); margin-right:6px; }
+  .tabs button.on { color:#fff; background:var(--ink); border-color:var(--ink); }
+  #script { max-height:620px; overflow:auto; font-size:14px; }
+  #script h1 { font-size:20px; } #script h2 { font-size:17px; margin-top:22px; } #script h3 { font-size:14px; color:var(--muted); letter-spacing:.03em; }
+  #script blockquote { margin:6px 0; padding:6px 10px; border-left:3px solid var(--line); color:var(--muted); font-size:13px; }
+  table.m { width:100%; border-collapse:collapse; font-size:13px; margin-top:8px; }
+  table.m td { padding:4px 0; border-bottom:1px solid var(--line); } table.m td:last-child { text-align:right; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main>
+  <h1>StoryForge</h1>
+  <p class="sub">Paste a public-domain story. A LangGraph team of agents (extractor → planner → writer ⇄ critic → localizer) turns it into a vertical microdrama series.</p>
+  <div class="grid">
+    <section class="card">
+      <textarea id="text" placeholder="Paste a story (at least a few paragraphs)…"></textarea>
+      <div class="row">
+        <button class="ghost" id="sample">Load sample story</button>
+        <label>Episodes <select id="episodes"><option>3</option><option>4</option><option selected>5</option><option>6</option></select></label>
+        <label>Languages <input type="text" id="langs" value="hi,hi-Latn" size="10"></label>
+        <label><input type="checkbox" id="mock"> Offline mock</label>
+        <button id="go">Generate</button>
+      </div>
+      <div class="row"><div id="status"></div></div>
+      <table class="m" id="metrics"></table>
+    </section>
+    <section class="card">
+      <div class="tabs" id="tabs"></div>
+      <div id="script"><p class="sub">The script appears here.</p></div>
+    </section>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function md(src) {
+  return src.split("\n").map(l => {
+    let h = esc(l).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/\*(.+?)\*/g, "<i>$1</i>");
+    if (l.startsWith("### ")) return "<h3>" + h.slice(4) + "</h3>";
+    if (l.startsWith("## ")) return "<h2>" + h.slice(3) + "</h2>";
+    if (l.startsWith("# ")) return "<h1>" + h.slice(2) + "</h1>";
+    if (l.startsWith("&gt; ")) return "<blockquote>" + h.slice(5) + "</blockquote>";
+    if (l.startsWith("- ")) return "<div>• " + h.slice(2) + "</div>";
+    if (l.trim() === "---") return "<hr>";
+    return l.trim() ? "<div>" + h + "</div>" : "";
+  }).join("");
+}
+$("sample").onclick = async () => { $("text").value = await (await fetch("/sample")).text(); };
+let jobId = null;
+async function showScript(lang) {
+  [...$("tabs").children].forEach(b => b.classList.toggle("on", b.dataset.lang === lang));
+  $("script").innerHTML = md(await (await fetch(`/jobs/${jobId}/script?lang=${encodeURIComponent(lang)}`)).text());
+}
+function showMetrics(m) {
+  const q = m.quality, s = m.structured_outputs, c = m.cost_latency;
+  const rows = [
+    ["Schema-valid first pass / after repair", `${s.first_pass_valid_pct}% / ${s.valid_after_repair_pct}%`],
+    ["Judge score: first draft → final", `${q.avg_first_draft_score} → ${q.avg_final_score} / 5`],
+    ["Continuity issues per episode: first → final", `${q.avg_continuity_issues_first_draft} → ${q.avg_continuity_issues_final}`],
+    ["Critic-driven revisions", q.total_revisions],
+    ["Tool calls", Object.values(m.tools).reduce((a, b) => a + b, 0)],
+    ["LLM calls / tokens", `${c.llm_calls} / ${c.input_tokens + c.output_tokens}`],
+    ["Cost per episode (list price)", `$${c.cost_per_episode_usd}`],
+  ];
+  $("metrics").innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join("");
+}
+$("go").onclick = async () => {
+  $("go").disabled = true; $("metrics").innerHTML = ""; $("tabs").innerHTML = "";
+  $("status").textContent = "Submitting…";
+  const body = { text: $("text").value, episodes: +$("episodes").value,
+                 languages: $("langs").value.split(",").map(s => s.trim()).filter(Boolean), mock: $("mock").checked };
+  const r = await fetch("/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) { $("status").textContent = "Error: " + (await r.text()); $("go").disabled = false; return; }
+  jobId = (await r.json()).job_id;
+  const t0 = Date.now();
+  const poll = async () => {
+    const j = await (await fetch(`/jobs/${jobId}`)).json();
+    $("status").textContent = `Job ${jobId}: ${j.status} (${Math.round((Date.now() - t0) / 1000)}s)` + (j.error ? ` — ${j.error}` : "");
+    if (j.status === "done") {
+      showMetrics(j.metrics);
+      $("tabs").innerHTML = j.scripts.map(l => `<button data-lang="${l}">${l}</button>`).join("");
+      [...$("tabs").children].forEach(b => b.onclick = () => showScript(b.dataset.lang));
+      showScript("en"); $("go").disabled = false;
+    } else if (j.status === "failed") { $("go").disabled = false; }
+    else setTimeout(poll, 2000);
+  };
+  poll();
+};
+</script>
+</body>
+</html>
